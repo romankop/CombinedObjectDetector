@@ -1,59 +1,75 @@
-# import the necessary packages
+# Импорт библиотек
 import numpy as np
 
+
 # Malisiewicz et al.
-def non_max_suppression_fast(boxes, overlapThresh):
-	# if there are no boxes, return an empty list
-	if len(boxes) == 0:
-		return []
+def non_max_suppression_fast(boxes, overlapThresh: float = 0.7):
+    """
+    Функция для подавления схожих боксов.
 
-	# if the bounding boxes integers, convert them to floats --
-	# this is important since we'll be doing a bunch of divisions
-	if boxes.dtype.kind == "i":
-		boxes = boxes.astype("float")
+    Функция принимает набор боксов и возвращает неперекрывающиеся боксы,
+    используя Non-Max Suppression Algorithm.
 
-	# initialize the list of picked indexes	
-	pick = []
+    Параметры
+    ----------
+    boxes: np.ndarray
+        Двумерный array, содержащий в себе N списков
+        формата Ndarray[x1, y1, x2, y2].
 
-	# grab the coordinates of the bounding boxes
-	x1 = boxes[:,0]
-	y1 = boxes[:,1]
-	x2 = boxes[:,2]
-	y2 = boxes[:,3]
+    overlapThresh: float, default 0.7
+        Пороговое значение для Non-Maximum Suppression Algorithm.
 
-	# compute the area of the bounding boxes and sort the bounding
-	# boxes by the bottom-right y-coordinate of the bounding box
-	area = (x2 - x1 + 1) * (y2 - y1 + 1)
-	idxs = np.argsort(y2)
+    Результат
+    ----------
+    Ndarray[Ndarray[x1, y1, x2, y2]]
+        Набор непересекающихся друг с другом боксов.
 
-	# keep looping while some indexes still remain in the indexes
-	# list
-	while len(idxs) > 0:
-		# grab the last index in the indexes list and add the
-		# index value to the list of picked indexes
-		last = len(idxs) - 1
-		i = idxs[last]
-		pick.append(i)
+    """
+    # Возврат при отсутствии входных данных
+    if len(boxes) == 0:
+        return []
 
-		# find the largest (x, y) coordinates for the start of
-		# the bounding box and the smallest (x, y) coordinates
-		# for the end of the bounding box
-		xx1 = np.maximum(x1[i], x1[idxs[:last]])
-		yy1 = np.maximum(y1[i], y1[idxs[:last]])
-		xx2 = np.minimum(x2[i], x2[idxs[:last]])
-		yy2 = np.minimum(y2[i], y2[idxs[:last]])
+    # Приведение к типу данных float
+    if boxes.dtype.kind == "i":
+        boxes = boxes.astype("float")
 
-		# compute the width and height of the bounding box
-		w = np.maximum(0, xx2 - xx1 + 1)
-		h = np.maximum(0, yy2 - yy1 + 1)
+    # Создаем список выбранных индексов боксов
+    pick = []
 
-		# compute the ratio of overlap
-		overlap = (w * h) / area[idxs[:last]]
+    # Извлечение координат боксов
+    x1 = boxes[:, 0]
+    y1 = boxes[:, 1]
+    x2 = boxes[:, 2]
+    y2 = boxes[:, 3]
 
-		# delete all indexes from the index list that have
-		idxs = np.delete(idxs, np.concatenate(([last],
-			np.where(overlap > overlapThresh)[0])))
+    # Считаем площадь боксов и сортируем по правому верхнему углу
+    area = (x2 - x1 + 1) * (y2 - y1 + 1)
+    idxs = np.argsort(y2)
 
-	# return only the bounding boxes that were picked using the
-	# integer data type
-	return boxes[pick]
+    # Итерация по оставшимся элементам в списке индексов
+    while len(idxs) > 0:
+        # Взятие бокса по последнему индексу в списке
+        last = len(idxs) - 1
+        i = idxs[last]
+        pick.append(i)
+
+        # Нахождение координат пересечений с выбранным боксом
+        xx1 = np.maximum(x1[i], x1[idxs[:last]])
+        yy1 = np.maximum(y1[i], y1[idxs[:last]])
+        xx2 = np.minimum(x2[i], x2[idxs[:last]])
+        yy2 = np.minimum(y2[i], y2[idxs[:last]])
+
+        # Вычисление широты и высоты боксов
+        w = np.maximum(0, xx2 - xx1 + 1)
+        h = np.maximum(0, yy2 - yy1 + 1)
+
+        # Нахождение индекса перекрытия
+        overlap = (w * h) / area[idxs[:last]]
+
+        # Удаление индексов боксов, сильно пересекающихся с выбранным
+        idxs = np.delete(idxs,
+                         np.concatenate(([last],
+                                        np.where(overlap > overlapThresh)[0])))
+
+    # Возвращение нужных боксов
+    return boxes[pick]

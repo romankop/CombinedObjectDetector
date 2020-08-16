@@ -1,5 +1,4 @@
 # Импорт библиотек
-
 import numpy as np
 import cv2
 import torch
@@ -24,6 +23,47 @@ TRACKERS = {
 
 with open('labels.txt') as labels:
     LABELS = np.array(list(csv.reader(labels))[0])
+
+
+class Detector:
+    """
+    Класс, выполняющий функции детектора.
+
+    Принимает на вход модель детектора, которая будут
+    использоваться классом для обработки кадров.
+
+    Параметры
+    ----------
+    model : torch.nn.Module
+          Модель детекции из библиотеки torchvision.models или любая
+          модель, обладающая тем же функционалом.
+    USE_CUDA : bool, default False, optional
+          Флаг, указывающий, нужно ли переводить использование модели
+          на GPU.
+    """
+
+    def __init__(self, model: torch.nn.Module, USE_CUDA: bool = False):
+        """ Метод инициализации класcа """
+
+        self.detector = model
+
+        if torch.cuda.is_available() and USE_CUDA:
+            self.device = torch.device("cuda")
+            self.detector.cuda()
+        else:
+            self.device = torch.device("cpu")
+
+    def __call__(self, image: np.ndarray) -> tuple:
+
+        image_tensor = image_tensor.to(self.device)
+
+        detections = self.detector([image_tensor])
+
+        boxes_detector, label_idx, scores = map(lambda x: x.cpu(),
+                                                detections[0].values())
+
+        return boxes_detector, label_idx, scores
+
 
 class DetectionTracker:
     """
@@ -61,7 +101,8 @@ class DetectionTracker:
                  overlap_threshold: float = 0.7, USE_CUDA: bool = False):
         """ Метод инициализации класcа """
 
-        self.detector = detector
+        self.detector = Detector(model=detector,
+                                 USE_CUDA=USE_CUDA)
 
         torch.set_grad_enabled(False)
         self.detector.eval()
@@ -70,19 +111,13 @@ class DetectionTracker:
             raise ValueError('Tracker is not represented in Open-CV!')
 
         if tracker is None and detection_decim > 0:
-            raise ValueError("Modulу won't be able to perform detection \
+            raise ValueError("Module won't be able to perform detection \
                               on some frames!")
 
         self.tracker = TRACKERS[tracker] if tracker is not None else tracker
         self.decim = detection_decim
         self.score_threshold = score_threshold
         self.overlap_threshold = overlap_threshold
-
-        if torch.cuda.is_available() and USE_CUDA:
-            self.device = torch.device("cuda")
-            self.detector.cuda()
-        else:
-            self.device = torch.device("cpu")
 
         self.trackers = cv2.MultiTracker_create()
         self.iter = 0
@@ -159,12 +194,7 @@ class DetectionTracker:
         # Получение результатов из детектора
         if det_status:
 
-            image_tensor = image_tensor.to(self.device)
-
-            detections = self.detector([image_tensor])
-
-            boxes_detector, label_idx, scores = map(lambda x: x.cpu(),
-                                                    detections[0].values())
+            boxes_detector, label_idx, scores = self.detector(image)
             labels = LABELS[label_idx]
 
             mask = scores > self.score_threshold

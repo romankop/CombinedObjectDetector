@@ -53,9 +53,50 @@ class Detector:
         else:
             self.device = torch.device("cpu")
 
+    def transform(self, image: np.ndarray) -> torch.Tensor:
+
+        """
+        Функция для форматирования картинки под torch-модель.
+
+        Производит трансформацию данных о картинке.
+
+        Параметры
+        ----------
+        image : np.ndarray
+            Картинка в формате np.ndarray размерности (H, W, C).
+
+        Результат
+        ----------
+        torch.Tensor
+            Отформатированная картинка в формате torch.Tensor.
+
+        """
+
+        transform_pipe = T.Compose([T.ToTensor()])
+
+        return transform_pipe(image)
+
     def __call__(self, image: np.ndarray) -> tuple:
 
-        image_tensor = image_tensor.to(self.device)
+        """
+        Метод вызова функции.
+
+        Производит предсказание объектов и их положения с помощью детектора.
+
+        Параметры
+        ----------
+        image : np.ndarray
+            Картинка в формате np.ndarray размерности (H, W, C).
+
+        Результат
+        ----------
+        Tuple
+            Кортеж из боксов, идентификаторов объектов на боксах и
+            вероятностей их нахождения.
+
+        """
+
+        image_tensor = self.transform(image).to(self.device)
 
         detections = self.detector([image_tensor])
 
@@ -165,7 +206,7 @@ class DetectionTracker:
 
         return np.argmax(iou_s)
 
-    def __call__(self, image_tensor: np.ndarray) -> list:
+    def __call__(self, image: np.ndarray) -> list:
 
         """
         Метод вызова функции.
@@ -175,8 +216,8 @@ class DetectionTracker:
 
         Параметры
         ----------
-        image_tensor : torch.Tensor
-            Отформатированная под детектор картинка типа torch.Tensor.
+        image : np.ndarray
+            Картинка в формате np.ndarray размерности (H, W, C).
 
         Результат
         ----------
@@ -205,8 +246,6 @@ class DetectionTracker:
 
         # Получение результатов из трекера и формирование общих результатов
         if self.tracker is not None:
-
-            image = image_tensor.cpu().numpy()
 
             _, boxes_tracker = self.trackers.update(image)
 

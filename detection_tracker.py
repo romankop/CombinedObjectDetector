@@ -2,6 +2,7 @@
 import numpy as np
 import cv2
 import torch
+import torchvision.transforms as T
 import csv
 from nms import non_max_suppression_fast as nms
 
@@ -47,6 +48,9 @@ class Detector:
 
         self.detector = model
 
+        torch.set_grad_enabled(False)
+        self.detector.eval()
+
         if torch.cuda.is_available() and USE_CUDA:
             self.device = torch.device("cuda")
             self.detector.cuda()
@@ -76,6 +80,38 @@ class Detector:
 
         return transform_pipe(image)
 
+    def trim(self, boxes: np.ndarray, format: tuple) -> np.ndarray:
+
+        """
+        Функция, вписывающая найденный бокс в рамки картинки.
+
+        Обрезает боксы, которые выходят за рамки картинки, по её границам.
+
+        Параметры
+        ----------
+        boxes : np.ndarray
+            Массив боксов, представляющих из себя array
+            формата Ndarray[x1, y1, x2, y2].
+
+        format : tuple
+            Разрешение картинки в виде кортежа из трех элементов:
+            количество пикселей по вертикали и горизонтали,
+            количество каналов.
+
+        Результат
+        ----------
+        np.ndarray
+            Массив обработанных боксов.
+
+        """
+
+        boxes = np.maximum(0, boxes)
+
+        boxes[:, (0, 2)] = np.minimum(format[1] - 1, boxes[:, (0, 2)])
+        boxes[:, (1, 3)] = np.minimum(format[0] - 1, boxes[:, (1, 3)])
+
+        return boxes
+
     def __call__(self, image: np.ndarray) -> tuple:
 
         """
@@ -96,14 +132,77 @@ class Detector:
 
         """
 
+        results = ['boxes', 'labels', 'scores']
         image_tensor = self.transform(image).to(self.device)
 
         detections = self.detector([image_tensor])
 
-        boxes_detector, label_idx, scores = map(lambda x: x.cpu(),
-                                                detections[0].values())
+        boxes_detector, label_id, scores = map(lambda x:
+                                               detections[0][x].cpu().numpy(),
+                                               results)
 
-        return boxes_detector, label_idx, scores
+        boxes_detector = self.trim(boxes_detector, image.shape)
+
+        return boxes_detector, label_id, scores
+
+
+class Tracker:
+    """
+    Класс, выполняющий функции трекера.
+
+    Принимает на вход название модели трекера, представленной в opencv-python,
+    которая будут использоваться классом для обработки кадров.
+
+    Параметры
+    ----------
+    tracker_type : {'csrt', 'kcf', 'boosting', 'mil', 'tld', 'medianflow',
+                    'mosse', 'goturn'}, default None
+          Строка, являющаяся ключом к словарю моделей трекеров TRACKERS.
+    """
+
+    def __init__(self, tracker_type: str):
+        """ Метод инициализации класcа """
+
+        self.tracker = TRACKERS[tracker_type]
+        self.trackers = cv2.MultiTracker_create()
+
+        self.current_image = None
+
+    def __call__(self, image: np.ndarray) -> tuple:
+
+        """
+        Метод вызова функции.
+
+        Производит предсказание положения объектов с помощью трекера.
+
+        Параметры
+        ----------
+        image : np.ndarray
+            Картинка в формате np.ndarray размерности (H, W, C).
+
+        Результат
+        ----------
+        np.ndarray or Tuple
+            Список обнаруженных боксов в формате np.ndarray, если они
+            обнаружены, и пустой кортеж в обратной ситуации.
+
+        """
+
+        self.current_image = image
+
+        _, boxes_tracker = self.trackers.update(image)
+
+        return boxes_tracker
+
+    def update(self, boxes):
+
+        self.trackers = cv2.MultiTracker_create()
+
+        for box in boxes:
+            box = tuple(box)
+            self.trackers.add(self.tracker(), self.current_image, box)
+
+        return
 
 
 class DetectionTracker:
@@ -119,8 +218,8 @@ class DetectionTracker:
           Модель детекции из библиотеки torchvision.models или любая
           модель, обладающая тем же функционалом.
 
-    tracker : {'csrt', 'kcf', 'boosting', 'mil', 'tld', 'medianflow',
-              'mosse', 'goturn'}, default None
+    tracker_type : {'csrt', 'kcf', 'boosting', 'mil', 'tld', 'medianflow',
+                    'mosse', 'goturn'}, default None
           Строка, являющаяся ключом к словарю моделей трекеров TRACKERS.
 
     detection_decim : int, default 0, optional
@@ -137,7 +236,7 @@ class DetectionTracker:
           на GPU.
     """
 
-    def __init__(self, detector: torch.nn.Module, tracker=None,
+    def __init__(self, detector: torch.nn.Module, tracker_type=None,
                  detection_decim: int = 0, score_threshold: float = 0.7,
                  overlap_threshold: float = 0.7, USE_CUDA: bool = False):
         """ Метод инициализации класcа """
@@ -145,22 +244,19 @@ class DetectionTracker:
         self.detector = Detector(model=detector,
                                  USE_CUDA=USE_CUDA)
 
-        torch.set_grad_enabled(False)
-        self.detector.eval()
-
-        if tracker is not None and tracker not in TRACKERS:
+        if tracker_type is not None and tracker_type not in TRACKERS:
             raise ValueError('Tracker is not represented in Open-CV!')
 
-        if tracker is None and detection_decim > 0:
+        if tracker_type is None and detection_decim > 0:
             raise ValueError("Module won't be able to perform detection \
                               on some frames!")
 
-        self.tracker = TRACKERS[tracker] if tracker is not None else tracker
+        self.tracker = Tracker(tracker_type) if tracker_type is not None \
+            else tracker_type
         self.decim = detection_decim
         self.score_threshold = score_threshold
         self.overlap_threshold = overlap_threshold
 
-        self.trackers = cv2.MultiTracker_create()
         self.iter = 0
 
     def _iou(self, box: np.ndarray, boxes: np.ndarray) -> int:
@@ -230,26 +326,30 @@ class DetectionTracker:
         """
 
         # Определение необходимости использования детектора
-        det_status = (self.decim == 0) or (self.iter % self.decim == 0)
+        det_status = (self.decim == 0) or \
+            (self.iter % self.decim == 0)
+
+        # Увеличиваем счетчик
+        self.iter += 1
 
         # Получение результатов из детектора
         if det_status:
 
-            boxes_detector, label_idx, scores = self.detector(image)
-            labels = LABELS[label_idx]
+            boxes_detector, label_id, scores = self.detector(image)
+            labels = LABELS[label_id]
 
             mask = scores > self.score_threshold
 
-            scores = scores[mask].numpy()
-            boxes_detector = boxes_detector[mask].numpy()
-            labels = labels[mask]
+            boxes_detector = boxes_detector[mask]
+            scores = np.atleast_1d(scores[mask])
+            labels = np.atleast_1d(labels[mask])
 
         # Получение результатов из трекера и формирование общих результатов
         if self.tracker is not None:
 
-            _, boxes_tracker = self.trackers.update(image)
+            boxes_tracker = self.tracker(image)
 
-            if det_status:
+            if det_status and scores.size:
 
                 if isinstance(boxes_tracker, np.ndarray):
 
@@ -263,39 +363,54 @@ class DetectionTracker:
 
             else:
 
-                boxes_inter = nms(boxes_tracker, self.overlap_threshold)
+                if isinstance(boxes_tracker, np.ndarray):
 
-                # Если детектор не используется, используем предыдущие данные
-                boxes_detector, label_idx, scores = self.prev_objects
-                labels = LABELS[label_idx]
+                    boxes_inter = nms(boxes_tracker, self.overlap_threshold)
 
-        else:
+                    # Если детектор не работает, берём предыдущие данные
+                    boxes_detector, labels, scores = self.prev_objects
+
+                else:
+
+                    boxes_inter = np.array([])
+
+            # Обновляем трекер и добавляем в него объекты
+
+            self.tracker.update(boxes_inter)
+
+        elif boxes_detector.size:
 
             boxes_inter = nms(boxes_detector, self.overlap_threshold)
 
-        # Создаем новый трекер и добавляем в него объекты
-        self.trackers = cv2.MultiTracker_create()
+        else:
 
-        for box in boxes_inter:
-            box = tuple(box)
-            self.trackers.add(self.tracker(), image, box)
+            boxes_inter = np.array([])
+
+        # Если боксов нет, то возвращаем пустой массив объектов
+        if not boxes_inter.size:
+
+            return []
 
         # Определяем, каким объектам соответствуют боксы
-        indexes_to_choose = np.apply_along_axis(self._iou, 1, boxes_inter,
-                                                boxes=boxes_detector)
+        indexes_to_choose = np.apply_along_axis(self._iou, 1,
+                                                boxes_inter,
+                                                boxes=boxes_detector
+                                                ).astype(int)
 
         boxes_detector_chosen = boxes_detector[indexes_to_choose, :]
         labels_chosen = labels[indexes_to_choose]
         scores_chosen = scores[indexes_to_choose]
 
         # Вычисляем признаки объекта
-        up_left_corner = boxes_detector_chosen[:, (0, 3)]
         height = boxes_detector_chosen[:, 3] - boxes_detector_chosen[:, 1]
         width = boxes_detector_chosen[:, 2] - boxes_detector_chosen[:, 0]
 
+        up_left_corner = boxes_detector_chosen[:, (0, 3)]
+        up_left_corner[:,  1] = up_left_corner[:, 1] - height
+
         # Формируем конечный результат
         objects = []
-        for i in range(scores.shape[0]):
+        for i in range(height.shape[0]):
             _object = {'up_left_corner': up_left_corner[i, :],
                        'height': height[i],
                        'width': width[i],
@@ -305,10 +420,7 @@ class DetectionTracker:
             objects.append(_object)
 
         # Сохраняем данные с текущей итерации
-        self.prev_objects = (boxes_detector_chosen, labels_chosen,
-                             scores_chosen)
-
-        # Увеличиваем счетчик
-        self.iter += 1
+        self.prev_objects = (boxes_detector_chosen,
+                             labels_chosen, scores_chosen)
 
         return objects

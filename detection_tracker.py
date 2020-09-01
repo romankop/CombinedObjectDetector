@@ -153,6 +153,11 @@ class DetectionTracker:
                     # Если детектор не работает, берём предыдущие данные
                     boxes_detector, labels, scores = self.prev_objects
 
+                    boxes_inter = nms(boxes_tracker, self.overlap_threshold)
+
+                    # Если детектор не работает, берём предыдущие данные
+                    boxes_detector, labels, scores = self.prev_objects
+
                 else:
 
                     boxes_inter = np.array([])
@@ -166,6 +171,11 @@ class DetectionTracker:
             boxes_inter = nms(boxes_detector, self.overlap_threshold)
 
         else:
+
+            boxes_inter = np.array([])
+
+        # Если боксов нет, то возвращаем пустой массив объектов
+        if not boxes_inter.size:
 
             boxes_inter = np.array([])
 
